@@ -1,0 +1,136 @@
+
+---
+title: "Análisis Microbiano - INV ITS"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r libraries}
+library(phyloseq)
+library(dplyr)
+library(ggplot2)
+library(vegan)
+library(UpSetR)
+library(ggvenn)
+library(FSA)
+library(pairwiseAdonis)
+```
+
+```{r data-loading}
+metadata <- read.csv("metadata.csv", header = TRUE, row.names = 1)
+taxonomy <- read.csv("taxonomy.csv", header = TRUE, row.names = 1)
+feature_table <- read.csv("feature-table.csv", header = TRUE, row.names = 1)
+
+OTU  <- otu_table(as.matrix(feature_table), taxa_are_rows = TRUE)
+TAX  <- tax_table(as.matrix(taxonomy))
+META <- sample_data(metadata)
+
+physeq <- phyloseq(OTU, TAX, META)
+```
+
+```{r filtering}
+physeq_filtered <- prune_taxa(taxa_sums(physeq) > 1, physeq)
+abundancia_media <- taxa_sums(physeq_filtered) / nsamples(physeq_filtered)
+physeq_abundancia <- prune_taxa(abundancia_media > 0, physeq_filtered)
+varianza <- apply(otu_table(physeq_abundancia), 1, var)
+q10 <- quantile(varianza, probs = 0.10)
+physeq_var <- prune_taxa(varianza >= q10, physeq_abundancia)
+min_lib <- min(sample_sums(physeq_var))
+physeq_rare <- rarefy_even_depth(physeq_var, sample.size = min_lib, rngseed = 123, verbose = FALSE)
+physeq_final <- transform_sample_counts(physeq_rare, function(x) x / sum(x))
+```
+
+```{r alpha-diversity}
+alpha_div <- estimate_richness(physeq_final, measures = "Shannon")
+alpha_div$Station <- sample_data(physeq_final)$Station
+
+ggplot(alpha_div, aes(x = Station, y = Shannon, fill = Station)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, shape = 21, color = "black") +
+  theme_minimal()
+
+kruskal.test(Shannon ~ Station, data = alpha_div)
+dunnTest(Shannon ~ Station, data = alpha_div, method = "bonferroni")
+```
+
+```{r composition}
+physeq_phylum <- tax_glom(physeq_final, "Phylum")
+physeq_rel <- transform_sample_counts(physeq_phylum, function(x) x / sum(x))
+physeq_df <- psmelt(physeq_rel)
+
+top_phyla <- physeq_df %>%
+  group_by(Phylum) %>%
+  summarise(total = sum(Abundance)) %>%
+  arrange(desc(total)) %>%
+  slice_head(n = 10) %>%
+  pull(Phylum)
+
+physeq_df <- physeq_df %>%
+  mutate(Phylum = ifelse(Phylum %in% top_phyla, Phylum, "Less Abundant"))
+
+ggplot(physeq_df, aes(x = Sample, y = Abundance, fill = Phylum)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ Station, scales = "free_x") +
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r beta-diversity}
+bray_dist <- distance(physeq_final, method = "bray")
+ordination <- ordinate(physeq_final, method = "PCoA", distance = bray_dist)
+
+plot_ordination(physeq_final, ordination, color = "Station") +
+  stat_ellipse(type = "t") +
+  theme_minimal()
+
+betadisp <- betadisper(bray_dist, sample_data(physeq_final)$Station)
+anova(betadisp)
+pairwise.adonis(bray_dist, sample_data(physeq_final)$Station)
+```
+
+```{r upset-venn}
+create_upset_venn <- function(physeq_obj, tax_rank) {
+  physeq_tax <- tax_glom(physeq_obj, taxrank = tax_rank)
+  otu_tax <- as.data.frame(otu_table(physeq_tax))
+  taxonomy_tax <- as.data.frame(tax_table(physeq_tax))
+  otu_tax[[tax_rank]] <- taxonomy_tax[[tax_rank]]
+
+  abundance_tax <- otu_tax %>%
+    group_by(.data[[tax_rank]]) %>%
+    summarise(across(where(is.numeric), sum, na.rm = TRUE)) %>%
+    filter(!is.na(.data[[tax_rank]]))
+
+  winter_tax <- abundance_tax %>% select(ends_with("W")) %>% mutate(Presence = rowSums(.) > 0)
+  summer_tax <- abundance_tax %>% select(ends_with("S")) %>% mutate(Presence = rowSums(.) > 0)
+  bulk_tax   <- abundance_tax %>% select(starts_with("Bulk")) %>% mutate(Presence = rowSums(.) > 0)
+
+  tax_presence <- data.frame(
+    Taxon = abundance_tax[[tax_rank]],
+    Winter = as.integer(winter_tax$Presence),
+    Summer = as.integer(summer_tax$Presence),
+    Bulk = as.integer(bulk_tax$Presence)
+  )
+
+  upset(tax_presence, sets = c("Winter", "Summer", "Bulk"),
+        order.by = "freq",
+        main.bar.color = "dodgerblue",
+        sets.bar.color = "skyblue",
+        matrix.color = "black",
+        sets.x.label = "Set Size")
+
+  tax_list <- list(
+    Winter = tax_presence$Taxon[tax_presence$Winter == 1],
+    Summer = tax_presence$Taxon[tax_presence$Summer == 1],
+    Bulk = tax_presence$Taxon[tax_presence$Bulk == 1]
+  )
+
+  ggvenn(tax_list, show_percentage = TRUE, fill_color = c("skyblue", "salmon", "lightgreen")) +
+    ggtitle(paste("Venn Diagram of", tax_rank)) +
+    theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"))
+}
+
+# Ejecutar para nivel Phylum
+create_upset_venn(physeq_final, "Phylum")
+```

@@ -1,0 +1,16 @@
+ID	Site	Station
+#q2:types	categorical	categorical
+A1S	Entrance	Summer
+A1W	Entrance	Winter
+A2S	Entrance	Summer
+A2W	Entrance	Winter
+A3S	Entrance	Summer
+A3W	Entrance	Winter
+B1S	Moon_Valley	Summer
+B1W	Moon_Valley	Winter
+B2S	Moon_Valley	Summer
+B2W	Moon_Valley	Winter
+B3S	Moon_Valley	Summer
+B3W	Moon_Valley	Winter
+Bulk1W	Bulk	Winter
+Bulk2W	Bulk	Winter
